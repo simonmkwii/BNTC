@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace BNTC
@@ -10,6 +11,35 @@ namespace BNTC
     internal class Program
     {
         public const int Magic = 0x43544e42;
+
+        public static byte[] Key = 
+        {
+            //REDACTED
+        };
+
+        public static byte[] IV =
+        {
+            //REDACTED
+        };
+
+        public static byte[] Crypt(byte[] Key, byte[] IV, byte[] Data, bool ForEncryption)
+        {
+            var Aes = new AesCryptoServiceProvider()
+            {
+                Key = Key,
+                IV = IV,
+                Mode = CipherMode.CBC,
+                Padding = PaddingMode.PKCS7
+            };
+            if (ForEncryption)
+            {
+                return Aes.CreateEncryptor().TransformFinalBlock(Data, 0, Data.Length);
+            }
+            else
+            {
+                return Aes.CreateDecryptor().TransformFinalBlock(Data, 0, Data.Length);
+            }
+        }
 
         public static byte[] Compress(byte[] Input)
         {
@@ -64,7 +94,7 @@ namespace BNTC
         {
             void Pack()
             {
-                var Strm = File.OpenWrite(args[2]);
+                var Strm = new MemoryStream();
                 var Writer = new BinaryWriter(Strm);
 
                 Writer.Write(Magic);
@@ -85,7 +115,7 @@ namespace BNTC
                 foreach (var file in FileNameList)
                 {
                     var InFile = Compress(BufferedRead(File.OpenRead(file)));
-                    var FullName = $"{Path.GetDirectoryName(file)}\\{ Path.GetFileName(file)}";
+                    var FullName = $"{Path.GetDirectoryName(file)}\\{Path.GetFileName(file)}";
                     Console.WriteLine($"Compressing and adding {FullName} to BNTC...");
                     Writer.Write(InFile.Length);
                     Writer.Write(FileNameOffsets);
@@ -105,30 +135,35 @@ namespace BNTC
                     Writer.Write(Encoding.ASCII.GetBytes(filename));
                     Writer.Write((byte)0); // Null-terminate
                 }
-
+                Console.WriteLine("\nEncrypting...");
+                File.WriteAllBytes(args[2]+"_encrypted.bntc", Crypt(Key, IV, Strm.ToArray(), true));
+                Writer.Close();
+                Strm.Close();
                 Console.WriteLine("\nDone!");
             }
 
             void Unpack()
             {
-                var Strm = File.OpenRead(args[1]);
-                var Reader = new BinaryReader(Strm);
+                var Strm = File.ReadAllBytes(args[1]);
+                Console.WriteLine("\nDecrypting...");
+                var RdStrm = new MemoryStream(Crypt(Key, IV, Strm, false));
+                var Reader = new BinaryReader(RdStrm);
 
                 if (Reader.ReadInt32() == Magic)
                 {
                     var OffsetToStringTable = Reader.ReadInt64();
                     var NumOfFiles = Reader.ReadInt32();
                     Console.WriteLine();
-                    foreach (var file in Enumerable.Range(0, NumOfFiles))
+                    for (int i = 0; i < NumOfFiles; i++)
                     {
                         var FileLength = Reader.ReadInt32();
                         var StringOfs = Reader.ReadInt32();
                         var FileStartPosition = Reader.BaseStream.Position;
-                        Strm.Position = OffsetToStringTable + StringOfs;
-                        var ReadAllStrings = new StreamReader(Strm).ReadToEnd();
+                        RdStrm.Position = OffsetToStringTable + StringOfs;
+                        var ReadAllStrings = new StreamReader(RdStrm).ReadToEnd();
                         var Filename = ReadAllStrings.Substring(0, Math.Max(0, ReadAllStrings.IndexOf('\0')));
                         Console.WriteLine($"Extracting {Filename}...");
-                        Strm.Position = FileStartPosition;
+                        RdStrm.Position = FileStartPosition;
                         Directory.CreateDirectory(Filename.Substring(0, Math.Max(0, Filename.LastIndexOf('\\'))));
                         var WriteOut = File.OpenWrite($@"{Filename}");
                         var Outfile = Decompress(Reader.ReadBytes(FileLength));
